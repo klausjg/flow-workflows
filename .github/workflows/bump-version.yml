@@ -87,13 +87,19 @@ jobs:
         if: steps.notes.outputs.source == 'file'
         run: |
           cat > RELEASE_NOTES.md <<'EOF'
-          ## ✨ 새로운 기능
+          ## 🎉 이번 릴리즈 요약
           - 
 
-          ## 🛠 개선
+          ## ✨ 추가된 기능
           - 
 
-          ## 🐛 버그 수정
+          ## 🔧 변경/개선
+          - 
+
+          ## 🐛 수정된 문제
+          - 
+
+          ## 📝 기타
           - 
           EOF
 
