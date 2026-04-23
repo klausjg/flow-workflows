@@ -7,7 +7,7 @@ on:
         required: false
         type: string
       title:
-        required: true
+        required: false
         type: string
       notes:
         required: false
@@ -49,11 +49,39 @@ jobs:
           cat /tmp/release_notes.md
           echo "---------------------------------"
 
+      - name: Resolve release title
+        id: title
+        env:
+          INPUT_TITLE: ${{ inputs.title }}
+        shell: bash
+        run: |
+          set -e
+          if [ -n "$INPUT_TITLE" ]; then
+            FINAL_TITLE="$INPUT_TITLE"
+          elif [ -f RELEASE_NOTES.md ]; then
+            # '## 🎉 이번 릴리즈 요약' 섹션 바로 아래의 첫 번째 비어있지 않은 불릿을 타이틀로 사용
+            FINAL_TITLE=$(awk '
+              /^##[[:space:]]+🎉[[:space:]]*이번[[:space:]]*릴리즈[[:space:]]*요약/ {found=1; next}
+              found && /^##[[:space:]]/ {found=0}
+              found && /^-[[:space:]]*/ {
+                sub(/^-[[:space:]]*/, "")
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+                if (length($0) > 0) { print; exit }
+              }
+            ' RELEASE_NOTES.md)
+          fi
+          if [ -z "$FINAL_TITLE" ]; then
+            echo "❌ title이 비어있고 RELEASE_NOTES.md의 '이번 릴리즈 요약'에서도 제목을 찾지 못했습니다."
+            exit 1
+          fi
+          echo "resolved title: $FINAL_TITLE"
+          echo "value=$FINAL_TITLE" >> "$GITHUB_OUTPUT"
+
       - name: Update version.json
         id: bump
         env:
-          INPUT_REV:   ${{ inputs.rev }}
-          INPUT_TITLE: ${{ inputs.title }}
+          INPUT_REV: ${{ inputs.rev }}
+          INPUT_TITLE: ${{ steps.title.outputs.value }}
         shell: bash
         run: |
           set -e
@@ -70,15 +98,15 @@ jobs:
           import json, os
           p = 'version.json'
           d = json.load(open(p, encoding='utf-8'))
-          d['rev']         = int(os.environ['NEW_REV'])
+          d['rev'] = int(os.environ['NEW_REV'])
           d['releaseDate'] = os.environ['DATE']
           d['releaseTime'] = os.environ['TIME']
-          d['title']       = os.environ['INPUT_TITLE']
+          d['title'] = os.environ['INPUT_TITLE']
           notes = open('/tmp/release_notes.md', encoding='utf-8').read().strip()
           if notes:
-              d['notes']   = notes
+            d['notes'] = notes
           json.dump(d, open(p, 'w', encoding='utf-8'),
-                    ensure_ascii=False, indent=2)
+            ensure_ascii=False, indent=2)
           open(p, 'a', encoding='utf-8').write('\n')
           PY
           echo "new_rev=$NEW" >> "$GITHUB_OUTPUT"
@@ -88,26 +116,22 @@ jobs:
         run: |
           cat > RELEASE_NOTES.md <<'EOF'
           ## 🎉 이번 릴리즈 요약
-          - 
-
+          -
           ## ✨ 추가된 기능
-          - 
-
+          -
           ## 🔧 변경/개선
-          - 
-
+          -
           ## 🐛 수정된 문제
-          - 
-
+          -
           ## 📝 기타
-          - 
+          -
           EOF
 
       - name: Commit & tag
         env:
           NEW_REV: ${{ steps.bump.outputs.new_rev }}
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add version.json RELEASE_NOTES.md 2>/dev/null || git add version.json
           git commit -m "chore: bump to rev-$NEW_REV"
@@ -117,8 +141,8 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-          NEW_REV:  ${{ steps.bump.outputs.new_rev }}
-          TITLE:    ${{ inputs.title }}
+          NEW_REV: ${{ steps.bump.outputs.new_rev }}
+          TITLE: ${{ steps.title.outputs.value }}
         run: |
           gh release create "rev-$NEW_REV" \
             --title "Rev. $NEW_REV - $TITLE" \
