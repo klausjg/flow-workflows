@@ -156,23 +156,18 @@ jobs:
             echo "GAS_RELEASE_WEBHOOK_URL secret 미등록 → GAS 호출 skip"
             exit 0
           fi
-          PAYLOAD=$(jq -n \
-            --arg secret "$SHARED_SECRET" \
-            --arg revPage "$REV_PAGE_ID" \
-            --arg app "$APP_NAME" \
-            --arg prev "$PREV_AT" \
-            '{ sharedSecret: $secret, revisionPageId: $revPage, appName: $app, lastReleaseAt: ($prev | if . == "" then null else . end) }')
-          echo "GAS 호출 페이로드:"
-          echo "$PAYLOAD" | jq .
-          # GAS Web App은 302 redirect를 보내는데, curl -L 기본 동작은 redirect 시
-          # POST를 GET으로 변환 → GAS가 405 Method Not Allowed로 응답.
-          # --post301/302/303 으로 redirect 후에도 POST 유지.
-          # Content-Type을 application/json으로 보내면 GAS가 redirect 처리에서
-          # method 보존을 못하는 알려진 이슈 → text/plain으로 보냄.
-          # (우리 doPost는 e.postData.contents를 JSON.parse 하므로 content-type 무관)
-          HTTP_RESPONSE=$(curl -sL --post301 --post302 --post303 -w "\n%{http_code}" -X POST "$WEBHOOK_URL" \
-            -H "Content-Type: text/plain;charset=utf-8" \
-            -d "$PAYLOAD")
+          echo "GAS 호출:"
+          echo "  appName: $APP_NAME"
+          echo "  revisionPageId: $REV_PAGE_ID"
+          echo "  lastReleaseAt: ${PREV_AT:-(없음)}"
+          # GAS Web App은 외부 POST가 redirect 처리에서 막히는 알려진 한계가 있어요.
+          # GET + query string 방식으로 호출하면 redirect target도 정상 처리.
+          # curl -G --data-urlencode 가 자동으로 query string 만들어줌.
+          HTTP_RESPONSE=$(curl -sL -w "\n%{http_code}" -G "$WEBHOOK_URL" \
+            --data-urlencode "sharedSecret=$SHARED_SECRET" \
+            --data-urlencode "revisionPageId=$REV_PAGE_ID" \
+            --data-urlencode "appName=$APP_NAME" \
+            --data-urlencode "lastReleaseAt=$PREV_AT")
           HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
           BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
           echo "GAS 응답 (HTTP $HTTP_CODE):"
