@@ -167,8 +167,11 @@ jobs:
           # GAS Web App은 302 redirect를 보내는데, curl -L 기본 동작은 redirect 시
           # POST를 GET으로 변환 → GAS가 405 Method Not Allowed로 응답.
           # --post301/302/303 으로 redirect 후에도 POST 유지.
+          # Content-Type을 application/json으로 보내면 GAS가 redirect 처리에서
+          # method 보존을 못하는 알려진 이슈 → text/plain으로 보냄.
+          # (우리 doPost는 e.postData.contents를 JSON.parse 하므로 content-type 무관)
           HTTP_RESPONSE=$(curl -sL --post301 --post302 --post303 -w "\n%{http_code}" -X POST "$WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
+            -H "Content-Type: text/plain;charset=utf-8" \
             -d "$PAYLOAD")
           HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
           BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
