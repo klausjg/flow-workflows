@@ -164,8 +164,10 @@ jobs:
             '{ sharedSecret: $secret, revisionPageId: $revPage, appName: $app, lastReleaseAt: ($prev | if . == "" then null else . end) }')
           echo "GAS 호출 페이로드:"
           echo "$PAYLOAD" | jq .
-          # GAS Web App은 종종 302 redirect → -L로 따라가기
-          HTTP_RESPONSE=$(curl -sL -w "\n%{http_code}" -X POST "$WEBHOOK_URL" \
+          # GAS Web App은 302 redirect를 보내는데, curl -L 기본 동작은 redirect 시
+          # POST를 GET으로 변환 → GAS가 405 Method Not Allowed로 응답.
+          # --post301/302/303 으로 redirect 후에도 POST 유지.
+          HTTP_RESPONSE=$(curl -sL --post301 --post302 --post303 -w "\n%{http_code}" -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
           HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
