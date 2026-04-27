@@ -12,12 +12,17 @@ on:
       notes:
         required: false
         type: string
+      source_repo:
+        required: false
+        type: string
+        description: "Source code 레포 (예: klausjg/taskflow-source). 지정 시 git log 기반 AI 패치노트 자동 생성."
     secrets:
       RELEASE_PAT:
         required: true
 
 permissions:
   contents: write
+  models: read
 
 jobs:
   bump:
@@ -28,6 +33,101 @@ jobs:
         with:
           fetch-depth: 0
 
+      # ─────────────────────────────────────────────
+      # NEW: source repo의 git log + diff를 모아 AI 입력 준비
+      # ─────────────────────────────────────────────
+      - name: Collect source changes for AI
+        if: inputs.source_repo != ''
+        id: collect
+        env:
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          PAT: ${{ secrets.RELEASE_PAT }}
+        shell: bash
+        run: |
+          set -e
+          # PWA 레포의 가장 최근 tag = 직전 release version (예: rev-12)
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "PWA repo 직전 tag: ${LAST_TAG:-(없음, 첫 release로 간주)}"
+
+          # source 레포 clone
+          rm -rf /tmp/source-checkout
+          git clone "https://x-access-token:${PAT}@github.com/${SOURCE_REPO}.git" /tmp/source-checkout
+          cd /tmp/source-checkout
+          git fetch --tags --quiet
+
+          # 직전 tag → HEAD 까지의 변경 내역 (없으면 최근 30 커밋)
+          if [ -n "$LAST_TAG" ] && git rev-parse "$LAST_TAG" >/dev/null 2>&1; then
+            RANGE="${LAST_TAG}..HEAD"
+          else
+            RANGE="HEAD~30..HEAD"
+            echo "source에 ${LAST_TAG} 태그 없음 → 최근 30 커밋 사용"
+          fi
+
+          {
+            echo "===== Commit log ====="
+            git log "$RANGE" --pretty=format:"- %s%n%b" --no-merges 2>/dev/null \
+              || git log -30 --pretty=format:"- %s"
+            echo ""
+            echo ""
+            echo "===== Files changed (stat) ====="
+            git diff --stat "$RANGE" 2>/dev/null || git diff --stat HEAD~30..HEAD
+            echo ""
+            echo "===== Sample diff (truncated) ====="
+            git diff "$RANGE" 2>/dev/null | head -c 4000 || true
+          } > /tmp/source_changes.txt
+
+          # AI 토큰 한도 고려해 길이 제한 (~6KB)
+          head -c 6000 /tmp/source_changes.txt > /tmp/ai_input.txt
+          echo "──── AI 입력 미리보기 ────"
+          cat /tmp/ai_input.txt
+          echo "──────────────────────────"
+
+      - name: Generate release notes via GitHub Models
+        if: inputs.source_repo != ''
+        id: ai_notes
+        uses: actions/ai-inference@v1
+        with:
+          model: openai/gpt-4o-mini
+          system-prompt: |
+            너는 사용자 친화적인 한국어 릴리즈 노트 작성기다.
+            기술 용어 (refactor, API, deprecation 등)는 최대한 빼고 일상 단어로 풀어 써라.
+            짧고 명확하게. 한 항목당 한 줄. 추측이나 과장 금지.
+            아래 마크다운 형식으로만 출력해라. 변경 내용이 없는 섹션은 "- " 한 줄만 비워두기.
+            절대 인사말, 설명, 코드 펜스(```)를 추가하지 마라.
+
+            ## 🎉 이번 릴리즈 요약
+            - (한 줄로 핵심 변화 요약. 사용자에게 가장 와닿는 표현으로)
+
+            ## ✨ 추가된 기능
+            -
+
+            ## 🔧 변경/개선
+            -
+
+            ## 🐛 수정된 문제
+            -
+
+            ## 📝 기타
+            -
+          prompt-file: /tmp/ai_input.txt
+
+      - name: Save AI output to RELEASE_NOTES.md
+        if: inputs.source_repo != '' && steps.ai_notes.outputs.response != ''
+        env:
+          AI_OUTPUT: ${{ steps.ai_notes.outputs.response }}
+        shell: bash
+        run: |
+          # 코드 펜스가 들어있으면 제거
+          printf '%s' "$AI_OUTPUT" \
+            | sed -e '/^```[a-zA-Z]*$/d' -e '/^```$/d' \
+            > RELEASE_NOTES.md
+          echo "──── AI 작성 RELEASE_NOTES.md ────"
+          cat RELEASE_NOTES.md
+          echo "──────────────────────────────────"
+
+      # ─────────────────────────────────────────────
+      # 기존 단계 (변경 없음)
+      # ─────────────────────────────────────────────
       - name: Prepare release notes
         id: notes
         env:
@@ -59,7 +159,6 @@ jobs:
           if [ -n "$INPUT_TITLE" ]; then
             FINAL_TITLE="$INPUT_TITLE"
           elif [ -f RELEASE_NOTES.md ]; then
-            # '## 🎉 이번 릴리즈 요약' 섹션 바로 아래의 첫 번째 비어있지 않은 불릿을 타이틀로 사용
             FINAL_TITLE=$(awk '
               /^##[[:space:]]+🎉[[:space:]]*이번[[:space:]]*릴리즈[[:space:]]*요약/ {found=1; next}
               found && /^##[[:space:]]/ {found=0}

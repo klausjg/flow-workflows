@@ -14,6 +14,10 @@ on:
         required: true
       NOTION_RELEASES_DB_ID:
         required: true
+      GAS_RELEASE_WEBHOOK_URL:
+        required: false
+      GAS_RELEASE_SECRET:
+        required: false
 
 jobs:
   notify-notion:
@@ -21,6 +25,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Read version.json
         id: version
@@ -55,7 +61,24 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "읽은 값: Rev.$REV ($ISO_DATE) - $TITLE"
 
+      # ─────────────────────────────────────────────
+      # 직전 release publish 시각 알아내기 (옵션 2 시간 필터용)
+      # ─────────────────────────────────────────────
+      - name: Find previous release timestamp
+        id: prev_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CUR_REV: ${{ steps.version.outputs.rev }}
+        run: |
+          # 모든 release 내림차순으로 가져와서, 현재 rev 다음으로 publish된 것
+          PREV_AT=$(gh release list --limit 20 --json publishedAt,tagName \
+            | jq -r --arg cur "rev-$CUR_REV" \
+              '[.[] | select(.tagName != $cur)] | sort_by(.publishedAt) | reverse | .[0].publishedAt // ""')
+          echo "직전 release 시각: ${PREV_AT:-(없음 — 첫 release로 처리)}"
+          echo "prev_at=$PREV_AT" >> "$GITHUB_OUTPUT"
+
       - name: Create Notion Release entry
+        id: notion_create
         env:
           NOTION_TOKEN:  ${{ secrets.NOTION_TOKEN }}
           NOTION_DB_ID:  ${{ secrets.NOTION_RELEASES_DB_ID }}
@@ -113,4 +136,43 @@ jobs:
             echo "$BODY" | jq . || echo "$BODY"
             exit 1
           fi
-          echo "✅ Notion Releases DB에 $APP_NAME Rev. $REV 기록 완료"
+          NEW_PAGE_ID=$(echo "$BODY" | jq -r '.id')
+          echo "✅ Notion Releases DB에 $APP_NAME Rev. $REV 기록 완료 (page id: $NEW_PAGE_ID)"
+          echo "page_id=$NEW_PAGE_ID" >> "$GITHUB_OUTPUT"
+
+      # ─────────────────────────────────────────────
+      # NEW: GAS 웹앱 호출로 Backlog 일괄 처리
+      #      (GAS_RELEASE_WEBHOOK_URL secret이 등록돼있을 때만 실행)
+      # ─────────────────────────────────────────────
+      - name: Trigger GAS for Backlog auto-completion
+        if: ${{ secrets.GAS_RELEASE_WEBHOOK_URL != '' }}
+        env:
+          WEBHOOK_URL: ${{ secrets.GAS_RELEASE_WEBHOOK_URL }}
+          SHARED_SECRET: ${{ secrets.GAS_RELEASE_SECRET }}
+          REV_PAGE_ID: ${{ steps.notion_create.outputs.page_id }}
+          APP_NAME: ${{ inputs.app_name }}
+          PREV_AT: ${{ steps.prev_release.outputs.prev_at }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg secret "$SHARED_SECRET" \
+            --arg revPage "$REV_PAGE_ID" \
+            --arg app "$APP_NAME" \
+            --arg prev "$PREV_AT" \
+            '{ sharedSecret: $secret, revisionPageId: $revPage, appName: $app, lastReleaseAt: ($prev | if . == "" then null else . end) }')
+          echo "GAS 호출 페이로드:"
+          echo "$PAYLOAD" | jq .
+          # GAS Web App은 종종 302 redirect → -L로 따라가기
+          HTTP_RESPONSE=$(curl -sL -w "\n%{http_code}" -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+          HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
+          BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+          echo "GAS 응답 (HTTP $HTTP_CODE):"
+          echo "$BODY" | jq . || echo "$BODY"
+          # GAS는 항상 200을 반환하므로 본문의 ok 플래그로 성공 판단
+          OK=$(echo "$BODY" | jq -r '.ok // false')
+          if [ "$OK" != "true" ]; then
+            echo "❌ GAS 처리 실패"
+            exit 1
+          fi
+          echo "✅ GAS Backlog 일괄 처리 완료"
