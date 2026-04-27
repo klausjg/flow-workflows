@@ -145,7 +145,6 @@ jobs:
       #      (GAS_RELEASE_WEBHOOK_URL secret이 등록돼있을 때만 실행)
       # ─────────────────────────────────────────────
       - name: Trigger GAS for Backlog auto-completion
-        if: ${{ secrets.GAS_RELEASE_WEBHOOK_URL != '' }}
         env:
           WEBHOOK_URL: ${{ secrets.GAS_RELEASE_WEBHOOK_URL }}
           SHARED_SECRET: ${{ secrets.GAS_RELEASE_SECRET }}
@@ -153,6 +152,10 @@ jobs:
           APP_NAME: ${{ inputs.app_name }}
           PREV_AT: ${{ steps.prev_release.outputs.prev_at }}
         run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "GAS_RELEASE_WEBHOOK_URL secret 미등록 → GAS 호출 skip"
+            exit 0
+          fi
           PAYLOAD=$(jq -n \
             --arg secret "$SHARED_SECRET" \
             --arg revPage "$REV_PAGE_ID" \
