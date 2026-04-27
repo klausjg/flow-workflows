@@ -55,25 +55,36 @@ jobs:
           cd /tmp/source-checkout
           git fetch --tags --quiet
 
-          # 직전 tag → HEAD 까지의 변경 내역 (없으면 최근 30 커밋)
+          # 비교 기준 commit 결정
+          # - source에 LAST_TAG가 있으면 그것부터 HEAD까지
+          # - 없으면 최근 30개 commit (단, commit이 30개 미만이면 첫 commit부터)
           if [ -n "$LAST_TAG" ] && git rev-parse "$LAST_TAG" >/dev/null 2>&1; then
-            RANGE="${LAST_TAG}..HEAD"
+            BASE_COMMIT=$(git rev-parse "$LAST_TAG")
+            echo "비교 기준: ${LAST_TAG} (${BASE_COMMIT})"
           else
-            RANGE="HEAD~30..HEAD"
-            echo "source에 ${LAST_TAG} 태그 없음 → 최근 30 커밋 사용"
+            BASE_COMMIT=$(git rev-list --max-count=30 HEAD | tail -1)
+            echo "비교 기준: 최근 30 커밋 시작점 ($BASE_COMMIT)"
+          fi
+
+          # BASE_COMMIT == HEAD 이면 변경 없음
+          HEAD_COMMIT=$(git rev-parse HEAD)
+          if [ "$BASE_COMMIT" = "$HEAD_COMMIT" ]; then
+            echo "변경된 commit이 없음. 빈 입력으로 진행."
+            : > /tmp/ai_input.txt
+            echo "no_changes=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           {
-            echo "===== Commit log ====="
-            git log "$RANGE" --pretty=format:"- %s%n%b" --no-merges 2>/dev/null \
-              || git log -30 --pretty=format:"- %s"
+            echo "===== Commit log (${BASE_COMMIT:0:7}..${HEAD_COMMIT:0:7}) ====="
+            git log "${BASE_COMMIT}..HEAD" --pretty=format:"- %s%n%b" --no-merges
             echo ""
             echo ""
             echo "===== Files changed (stat) ====="
-            git diff --stat "$RANGE" 2>/dev/null || git diff --stat HEAD~30..HEAD
+            git diff --stat "${BASE_COMMIT}..HEAD"
             echo ""
             echo "===== Sample diff (truncated) ====="
-            git diff "$RANGE" 2>/dev/null | head -c 4000 || true
+            git diff "${BASE_COMMIT}..HEAD" | head -c 4000 || true
           } > /tmp/source_changes.txt
 
           # AI 토큰 한도 고려해 길이 제한 (~6KB)
